@@ -1,0 +1,167 @@
+{
+  "name": "APOD_Daily_Collector_V2",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "manual",
+      "name": "MANUAL — iniciar coleta",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [-900, 0]
+    },
+    {
+      "parameters": {
+        "url": "https://api.nasa.gov/planetary/apod",
+        "sendQuery": true,
+        "queryParameters": {"parameters": [{"name": "api_key", "value": "={{$env.NASA_API_KEY}}"}, {"name": "thumbs", "value": "true"}]},
+        "options": {}
+      },
+      "id": "nasa",
+      "name": "NASA — buscar APOD",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-680, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const a = $json;\n\nconst title = String(a.title ?? '').trim();\nconst explanation = String(a.explanation ?? '').trim();\nconst copyright = String(a.copyright ?? 'NASA').trim();\n\nconst nasaType = String(a.media_type ?? 'other');\nconst isImage = nasaType === 'image' && !!a.url;\nconst validationStatus = isImage ? 'VALID' : 'NOT_SUPPORTED';\nconst mediaType = isImage ? 'image' : 'blocked';\nconst mediaUrl = isImage ? (a.hdurl || a.url) : null;\nconst previewUrl = isImage ? (a.url || a.hdurl) : (a.thumbnail_url || null);\nconst descriptionPt = explanation;\n\nconst caption = [\n  `🌌 APOD — ${a.date ?? ''}`,\n  '',\n  title,\n  '',\n  descriptionPt,\n  '',\n  `Créditos: NASA / ${copyright}`,\n  'Fonte: NASA APOD',\n  '',\n  '#NASA #APOD #Astronomia #Espaço #Universo'\n].join('\\n');\n\nreturn [{\n  json: {\n    apod_date: a.date,\n    title,\n    description_original: explanation,\n    description_pt: descriptionPt,\n    copyright,\n    nasa_media_type: nasaType,\n    media_type: mediaType,\n    media_url: mediaUrl,\n    hd_url: a.hdurl ?? null,\n    thumbnail_url: a.thumbnail_url ?? null,\n    preview_url: previewUrl,\n    source_url: a.url ?? null,\n    external_id: `apod:${a.date}`,\n    caption,\n    validation_status: validationStatus,\n    validation_message: isImage ? 'Imagem APOD aceita pela fundação V2.' : `Mídia ${nasaType} ainda não habilitada para publicação.`,\n    approval_ttl_hours: 6,\n    raw_payload: a\n  },\n  pairedItem: { item: 0 }\n}];"
+      },
+      "id": "normalize",
+      "name": "Normalizar APOD",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-450, 0]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM ingest_apod_draft($1::jsonb);",
+        "options": {"queryReplacement": "={{ JSON.stringify($json) }}"}
+      },
+      "id": "ingest",
+      "name": "PostgreSQL — ingestão atômica",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [-200, 0],
+      "credentials": {"postgres": {"id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID", "name": "Postgres APOD"}}
+    },
+    {
+      "parameters": {
+        "conditions": {"conditions": [
+          {"id": "ready", "leftValue": "={{ $json.status }}", "rightValue": "READY_FOR_APPROVAL", "operator": {"type": "string", "operation": "equals"}},
+          {"id": "new", "leftValue": "={{ $json.is_new_draft }}", "rightValue": true, "operator": {"type": "boolean", "operation": "true", "singleValue": true}}
+        ], "combinator": "and"},
+        "options": {}
+      },
+      "id": "ready",
+      "name": "Novo e pronto para aprovação?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [40, 0]
+    },
+    {
+      "parameters": {
+        "conditions": {"conditions": [{"id": "haspreview", "leftValue": "={{ !!$json.preview_url }}", "rightValue": true, "operator": {"type": "boolean", "operation": "true", "singleValue": true}}], "combinator": "and"},
+        "options": {}
+      },
+      "id": "previewif",
+      "name": "Tem imagem de prévia?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [280, -80]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{$env.TELEGRAM_BOT_TOKEN}}/sendPhoto",
+        "sendBody": true,
+        "contentType": "json",
+        "bodyParameters": {"parameters": [
+          {"name": "chat_id", "value": "={{$env.TELEGRAM_CHAT_ID}}"},
+          {"name": "photo", "value": "={{ $('PostgreSQL — ingestão atômica').item.json.preview_url }}"},
+          {"name": "caption", "value": "={{ '🌌 Prévia APOD — ' + $('Normalizar APOD').item.json.apod_date + '\\n' + $('Normalizar APOD').item.json.title }}"}
+        ]},
+        "options": {}
+      },
+      "id": "sendphoto",
+      "name": "Telegram — enviar imagem",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [520, -180]
+    },
+    {
+      "parameters": {"jsCode": "const ingest = $('PostgreSQL — ingestão atômica').item.json;\nlet previewMessageId = null;\ntry { previewMessageId = $('Telegram — enviar imagem').item.json.result?.message_id ?? null; } catch {}\nreturn [{json:{...ingest,preview_message_id:previewMessageId}}];"},
+      "id": "prepmsgphoto",
+      "name": "Preparar mensagem após prévia",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [750, -180]
+    },
+    {
+      "parameters": {"jsCode": "return [{json:{...$json,preview_message_id:null}}];"},
+      "id": "prepmsgnophoto",
+      "name": "Preparar mensagem sem prévia",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [520, 40]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{$env.TELEGRAM_BOT_TOKEN}}/sendMessage",
+        "sendBody": true,
+        "contentType": "json",
+        "bodyParameters": {"parameters": [
+          {"name": "chat_id", "value": "={{$env.TELEGRAM_CHAT_ID}}"},
+          {"name": "text", "value": "={{$json.caption}}"},
+          {"name": "reply_markup", "value": "={{JSON.stringify({inline_keyboard:[[{text:'✅ APROVAR',callback_data:'a:'+ $json.approval_key},{text:'❌ REJEITAR',callback_data:'r:'+ $json.approval_key}]]})}}"}
+        ]},
+        "options": {}
+      },
+      "id": "sendmessage",
+      "name": "Telegram — enviar aprovação",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1000, -60]
+    },
+    {
+      "parameters": {"jsCode": "const base = $('Preparar mensagem após prévia').isExecuted ? $('Preparar mensagem após prévia').item.json : $('Preparar mensagem sem prévia').item.json;\nreturn [{json:{draft_id:base.draft_id,chat_id:String($env.TELEGRAM_CHAT_ID),message_id:String($json.result?.message_id ?? ''),preview_message_id:base.preview_message_id == null ? '' : String(base.preview_message_id)}}];"},
+      "id": "telegramrecordpayload",
+      "name": "Montar registro Telegram",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1240, -60]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT register_telegram_message($1::jsonb);",
+        "options": {"queryReplacement": "={{ JSON.stringify($json) }}"}
+      },
+      "id": "register",
+      "name": "PostgreSQL — registrar Telegram",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [1480, -60],
+      "credentials": {"postgres": {"id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID", "name": "Postgres APOD"}}
+    }
+  ],
+  "connections": {
+    "MANUAL — iniciar coleta": {"main": [[{"node": "NASA — buscar APOD", "type": "main", "index": 0}]]},
+    "NASA — buscar APOD": {"main": [[{"node": "Normalizar APOD", "type": "main", "index": 0}]]},
+    "Normalizar APOD": {"main": [[{"node": "PostgreSQL — ingestão atômica", "type": "main", "index": 0}]]},
+    "PostgreSQL — ingestão atômica": {"main": [[{"node": "Novo e pronto para aprovação?", "type": "main", "index": 0}]]},
+    "Novo e pronto para aprovação?": {"main": [[{"node": "Tem imagem de prévia?", "type": "main", "index": 0}], []]},
+    "Tem imagem de prévia?": {"main": [[{"node": "Telegram — enviar imagem", "type": "main", "index": 0}], [{"node": "Preparar mensagem sem prévia", "type": "main", "index": 0}]]},
+    "Telegram — enviar imagem": {"main": [[{"node": "Preparar mensagem após prévia", "type": "main", "index": 0}]]},
+    "Preparar mensagem após prévia": {"main": [[{"node": "Telegram — enviar aprovação", "type": "main", "index": 0}]]},
+    "Preparar mensagem sem prévia": {"main": [[{"node": "Telegram — enviar aprovação", "type": "main", "index": 0}]]},
+    "Telegram — enviar aprovação": {"main": [[{"node": "Montar registro Telegram", "type": "main", "index": 0}]]},
+    "Montar registro Telegram": {"main": [[{"node": "PostgreSQL — registrar Telegram", "type": "main", "index": 0}]]}
+  },
+  "active": false,
+  "settings": {"executionOrder": "v1"},
+  "pinData": {},
+  "meta": {"templateCredsSetupCompleted": false},
+  "tags": []
+}

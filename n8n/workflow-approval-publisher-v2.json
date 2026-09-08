@@ -1,0 +1,219 @@
+{
+  "name": "APOD_Approval_Publisher_V2",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "telegram/apod-approval-v2",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "webhook",
+      "name": "Telegram — webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [-900, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $json.body ?? $json;\nconst cb = body.callback_query;\n\nif (!cb) {\n  return [{json:{authorized:false, reason:'NO_CALLBACK_QUERY', callback_query_id:null}}];\n}\n\nconst userId = String(cb.from?.id ?? '');\nconst chatId = String(cb.message?.chat?.id ?? '');\nconst messageId = String(cb.message?.message_id ?? '');\nconst allowedUser = String($env.TELEGRAM_ALLOWED_USER_ID ?? '');\nconst allowedChat = String($env.TELEGRAM_CHAT_ID ?? '');\nconst data = String(cb.data ?? '');\n\nlet action = null;\nlet approvalKey = null;\n\nconst match = data.match(/^([ar]):([0-9a-f]{24})$/i);\nif (match) {\n  action = match[1].toLowerCase() === 'a' ? 'approve' : 'reject';\n  approvalKey = match[2].toLowerCase();\n}\n\nlet authorized = true;\nlet reason = 'OK';\n\nif (!allowedUser || userId !== allowedUser) {\n  authorized = false;\n  reason = 'UNAUTHORIZED_USER';\n} else if (!allowedChat || chatId !== allowedChat) {\n  authorized = false;\n  reason = 'UNAUTHORIZED_CHAT';\n} else if (!match) {\n  authorized = false;\n  reason = 'INVALID_CALLBACK';\n}\n\nreturn [{\n  json: {\n    authorized,\n    reason,\n    action,\n    approval_key: approvalKey,\n    callback_query_id: cb.id,\n    telegram_user_id: userId,\n    telegram_chat_id: chatId,\n    telegram_message_id: messageId\n  }\n}];"
+      },
+      "id": "parse",
+      "name": "Validar callback Telegram",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-660, 0]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "id": "auth",
+              "leftValue": "={{$json.authorized}}",
+              "rightValue": true,
+              "operator": {"type": "boolean", "operation": "true", "singleValue": true}
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "authif",
+      "name": "Callback autorizado?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [-420, 0]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM process_approval_callback($1::jsonb);",
+        "options": {"queryReplacement": "={{ JSON.stringify($json) }}"}
+      },
+      "id": "process",
+      "name": "PostgreSQL — processar callback",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [-160, -100],
+      "credentials": {"postgres": {"id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID", "name": "Postgres APOD"}}
+    },
+    {
+      "parameters": {
+        "jsCode": "const src = $('Validar callback Telegram').item.json;\nconst r = $json;\n\nconst messages = {\n  APPROVED: '✅ Publicação aprovada.',\n  REJECTED: '❌ Publicação rejeitada.',\n  EXPIRED: '⌛ Este rascunho expirou.',\n  ALREADY_PROCESSED: 'ℹ️ Este rascunho já foi processado.',\n  DRAFT_NOT_FOUND: '⚠️ Rascunho não encontrado.',\n  CHAT_MISMATCH: '⚠️ Chat inválido.',\n  MESSAGE_MISMATCH: '⚠️ Mensagem inválida.',\n  INVALID_ACTION: '⚠️ Ação inválida.'\n};\n\nreturn [{\n  json: {\n    ...src,\n    ...r,\n    callback_text: messages[r.result_code] || '⚠️ Não foi possível processar.',\n    remove_buttons: !!r.draft_id && ['APPROVED','REJECTED','EXPIRED','ALREADY_PROCESSED'].includes(r.result_code),\n    should_reserve_publication: r.ok === true && r.result_code === 'APPROVED'\n  }\n}];"
+      },
+      "id": "result",
+      "name": "Interpretar resultado",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [80, -100]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{$env.TELEGRAM_BOT_TOKEN}}/answerCallbackQuery",
+        "sendBody": true,
+        "contentType": "json",
+        "bodyParameters": {"parameters": [
+          {"name": "callback_query_id", "value": "={{$json.callback_query_id}}"},
+          {"name": "text", "value": "={{$json.callback_text}}"}
+        ]},
+        "options": {}
+      },
+      "id": "answerok",
+      "name": "Telegram — responder callback",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [320, -100]
+    },
+    {
+      "parameters": {"jsCode": "return [{json:$('Interpretar resultado').item.json}];"},
+      "id": "restore",
+      "name": "Restaurar resultado",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [550, -100]
+    },
+    {
+      "parameters": {
+        "conditions": {"conditions": [{"id": "remove", "leftValue": "={{$json.remove_buttons}}", "rightValue": true, "operator": {"type": "boolean", "operation": "true", "singleValue": true}}], "combinator": "and"},
+        "options": {}
+      },
+      "id": "removeif",
+      "name": "Remover botões?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [780, -100]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{$env.TELEGRAM_BOT_TOKEN}}/editMessageReplyMarkup",
+        "sendBody": true,
+        "contentType": "json",
+        "bodyParameters": {"parameters": [
+          {"name": "chat_id", "value": "={{$json.telegram_chat_id}}"},
+          {"name": "message_id", "value": "={{$json.telegram_message_id}}"},
+          {"name": "reply_markup", "value": "={{JSON.stringify({inline_keyboard:[]})}}"}
+        ]},
+        "options": {}
+      },
+      "id": "removebuttons",
+      "name": "Telegram — remover botões",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1010, -200]
+    },
+    {
+      "parameters": {"jsCode": "return [{json:$('Restaurar resultado').item.json}];"},
+      "id": "restore2",
+      "name": "Restaurar após Telegram",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1240, -200]
+    },
+    {
+      "parameters": {
+        "conditions": {"conditions": [{"id": "pub", "leftValue": "={{$json.should_reserve_publication}}", "rightValue": true, "operator": {"type": "boolean", "operation": "true", "singleValue": true}}], "combinator": "and"},
+        "options": {}
+      },
+      "id": "pubif",
+      "name": "Aprovado para publicar?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1480, -100]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM reserve_publication($1::uuid);",
+        "options": {"queryReplacement": "={{$json.draft_id}}"}
+      },
+      "id": "reserve",
+      "name": "PostgreSQL — reservar publicação",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [1720, -180],
+      "credentials": {"postgres": {"id": "REPLACE_WITH_POSTGRES_CREDENTIAL_ID", "name": "Postgres APOD"}}
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{\n  json:{\n    ...$json,\n    instagram_gate:true,\n    note:'Fundação V2 concluída. Conectar aqui o workflow/nó de publicação Instagram na próxima etapa.'\n  }\n}];"
+      },
+      "id": "gate",
+      "name": "GATE — Instagram V2",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1960, -180]
+    },
+    {
+      "parameters": {
+        "jsCode": "const src = $('Validar callback Telegram').item.json;\nconst reason = src.reason || 'UNAUTHORIZED';\nconst texts = {\n  UNAUTHORIZED_USER:'⛔ Usuário não autorizado.',\n  UNAUTHORIZED_CHAT:'⛔ Chat não autorizado.',\n  INVALID_CALLBACK:'⚠️ Callback inválido.',\n  NO_CALLBACK_QUERY:'⚠️ Evento inválido.'\n};\nreturn [{json:{...src,callback_text:texts[reason] || '⛔ Não autorizado.'}}];"
+      },
+      "id": "unauthmsg",
+      "name": "Preparar resposta não autorizada",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-160, 160]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{$env.TELEGRAM_BOT_TOKEN}}/answerCallbackQuery",
+        "sendBody": true,
+        "contentType": "json",
+        "bodyParameters": {"parameters": [
+          {"name": "callback_query_id", "value": "={{$json.callback_query_id}}"},
+          {"name": "text", "value": "={{$json.callback_text}}"},
+          {"name": "show_alert", "value": "true"}
+        ]},
+        "options": {}
+      },
+      "id": "answerbad",
+      "name": "Telegram — negar callback",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [80, 160]
+    }
+  ],
+  "connections": {
+    "Telegram — webhook": {"main": [[{"node": "Validar callback Telegram", "type": "main", "index": 0}]]},
+    "Validar callback Telegram": {"main": [[{"node": "Callback autorizado?", "type": "main", "index": 0}]]},
+    "Callback autorizado?": {"main": [[{"node": "PostgreSQL — processar callback", "type": "main", "index": 0}], [{"node": "Preparar resposta não autorizada", "type": "main", "index": 0}]]},
+    "PostgreSQL — processar callback": {"main": [[{"node": "Interpretar resultado", "type": "main", "index": 0}]]},
+    "Interpretar resultado": {"main": [[{"node": "Telegram — responder callback", "type": "main", "index": 0}]]},
+    "Telegram — responder callback": {"main": [[{"node": "Restaurar resultado", "type": "main", "index": 0}]]},
+    "Restaurar resultado": {"main": [[{"node": "Remover botões?", "type": "main", "index": 0}]]},
+    "Remover botões?": {"main": [[{"node": "Telegram — remover botões", "type": "main", "index": 0}], [{"node": "Aprovado para publicar?", "type": "main", "index": 0}]]},
+    "Telegram — remover botões": {"main": [[{"node": "Restaurar após Telegram", "type": "main", "index": 0}]]},
+    "Restaurar após Telegram": {"main": [[{"node": "Aprovado para publicar?", "type": "main", "index": 0}]]},
+    "Aprovado para publicar?": {"main": [[{"node": "PostgreSQL — reservar publicação", "type": "main", "index": 0}], []]},
+    "PostgreSQL — reservar publicação": {"main": [[{"node": "GATE — Instagram V2", "type": "main", "index": 0}]]},
+    "Preparar resposta não autorizada": {"main": [[{"node": "Telegram — negar callback", "type": "main", "index": 0}]]}
+  },
+  "active": false,
+  "settings": {"executionOrder": "v1"},
+  "pinData": {},
+  "meta": {"templateCredsSetupCompleted": false},
+  "tags": []
+}

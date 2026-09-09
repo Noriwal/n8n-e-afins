@@ -1,0 +1,10 @@
+# Segredos locais
+.env
+.env.*
+!.env.example
+
+# Backups/artefatos locais
+*.bak
+*.tmp
+.DS_Store
+Thumbs.db

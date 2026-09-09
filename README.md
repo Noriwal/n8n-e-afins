@@ -24,14 +24,94 @@ Esta versão corrige os principais problemas identificados na primeira fundaçã
 - `database/schema.sql`
 - `n8n/workflow-apod-collector-v2.json`
 - `n8n/workflow-approval-publisher-v2.json`
+- `.env.example`
+- `scripts/generate-env.ps1`
+- `scripts/generate-env.sh`
+- `scripts/discover-telegram-ids.ps1`
+- `scripts/discover-telegram-ids.sh`
 
-## Variáveis de ambiente
+## Bootstrap automático de chaves e segredos
+
+Nunca coloque o arquivo `.env` no Git. O `.gitignore` deste projeto já o protege.
+
+Os scripts de bootstrap geram automaticamente segredos locais criptograficamente aleatórios para:
+
+- `POSTGRES_ADMIN_PASSWORD`
+- `POSTGRES_PASSWORD`
+- `REDIS_PASSWORD`
+- `N8N_ENCRYPTION_KEY`
+- `TELEGRAM_WEBHOOK_SECRET`
+
+As credenciais que pertencem a serviços externos não podem ser inventadas localmente e continuam sendo obtidas nos respectivos provedores:
+
+- `NASA_API_KEY`
+- `TELEGRAM_BOT_TOKEN`
+- `INSTAGRAM_ACCESS_TOKEN`
+- `INSTAGRAM_ACCOUNT_ID`
+
+### Windows / PowerShell
+
+Na raiz do repositório:
+
+```powershell
+.\scripts\generate-env.ps1
+```
+
+Para recriar deliberadamente o `.env`:
+
+```powershell
+.\scripts\generate-env.ps1 -Force
+```
+
+Depois, preencha `TELEGRAM_BOT_TOKEN`, envie uma mensagem para o bot e execute:
+
+```powershell
+.\scripts\discover-telegram-ids.ps1
+```
+
+O script consulta `getUpdates` e preenche automaticamente:
 
 ```text
+TELEGRAM_CHAT_ID=
+TELEGRAM_ALLOWED_USER_ID=
+```
+
+### Linux / macOS
+
+```bash
+chmod +x scripts/*.sh
+./scripts/generate-env.sh
+```
+
+Para recriar:
+
+```bash
+./scripts/generate-env.sh --force
+```
+
+Depois de preencher o token do bot e enviar uma mensagem para ele:
+
+```bash
+./scripts/discover-telegram-ids.sh
+```
+
+## Variáveis de ambiente principais
+
+```text
+POSTGRES_ADMIN_USER=postgres
+POSTGRES_ADMIN_PASSWORD=<gerado>
+POSTGRES_USER=n8n
+POSTGRES_PASSWORD=<gerado>
+POSTGRES_DB=n8n
+REDIS_PASSWORD=<gerado>
+N8N_ENCRYPTION_KEY=<gerado>
+TELEGRAM_WEBHOOK_SECRET=<gerado>
 NASA_API_KEY=
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
 TELEGRAM_ALLOWED_USER_ID=
+INSTAGRAM_ACCESS_TOKEN=
+INSTAGRAM_ACCOUNT_ID=
 ```
 
 ## Credencial PostgreSQL
@@ -45,24 +125,26 @@ REPLACE_WITH_POSTGRES_CREDENTIAL_ID
 
 ## Implantação
 
-1. Faça backup do banco antes de aplicar em uma base existente.
-2. Execute `database/schema.sql`.
-3. Importe os dois workflows.
-4. Configure a credencial PostgreSQL.
-5. Defina as variáveis de ambiente no container/serviço do n8n.
-6. Teste `APOD_Daily_Collector_V2` manualmente.
-7. Confirme:
+1. Clone o repositório.
+2. Execute o gerador de `.env` apropriado ao sistema operacional.
+3. Preencha as credenciais externas necessárias.
+4. Execute `database/schema.sql`.
+5. Importe os dois workflows.
+6. Configure a credencial PostgreSQL.
+7. Defina as variáveis de ambiente no container/serviço do n8n.
+8. Teste `APOD_Daily_Collector_V2` manualmente.
+9. Confirme:
    - APOD criada em `apod_items`;
    - draft criado;
    - imagem de prévia enviada quando aplicável;
    - mensagem com botões recebida;
    - IDs Telegram registrados.
-8. Ative `APOD_Approval_Publisher_V2`.
-9. Configure o webhook do Telegram para:
-   `https://SEU_N8N/webhook/telegram/apod-approval-v2`
-10. Teste REJEITAR.
-11. Gere um novo draft e teste APROVAR.
-12. Na aprovação, o draft deve chegar a `PUBLISHING` e parar no `GATE — Instagram V2`.
+10. Ative `APOD_Approval_Publisher_V2`.
+11. Configure o webhook do Telegram para:
+    `https://SEU_N8N/webhook/telegram/apod-approval-v2`
+12. Teste REJEITAR.
+13. Gere um novo draft e teste APROVAR.
+14. Na aprovação, o draft deve chegar a `PUBLISHING` e parar no `GATE — Instagram V2`.
 
 ## Observação sobre tradução
 
